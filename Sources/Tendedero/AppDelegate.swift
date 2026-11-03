@@ -554,7 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCapacity()
         refresh()
         reveal(pinned: true)
-        panel.ignoresMouseEvents = false
+        // Pass-through stays on until the drag actually enters DropZone;
+        // otherwise a sticky drag pasteboard would block clicks under the line.
     }
 
     private func startMouseTracking() {
@@ -693,20 +694,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// whatever is underneath.
     private func updateMousePassThrough(_ mouse: NSPoint) {
         guard !GrabView.isDragging else { return }
-        // While Finder (or another app) drags images onto the line, keep the
-        // whole strip interactive so DropZone can receive the drop.
-        if DropZone.isReceiving || DropZone.dragLooksLikeImages() {
+        // Only while a drag is actually in progress (or already over DropZone)
+        // take the whole strip. dragLooksLikeImages alone is not enough: the
+        // drag pasteboard can linger and would block clicks under a stayed-down line.
+        let draggingImages = DropZone.isReceiving
+            || (NSEvent.pressedMouseButtons != 0 && DropZone.dragLooksLikeImages())
+        if draggingImages {
             if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
             return
         }
         let local = panel.convertPoint(fromScreen: mouse)
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
-        var overPhoto = line.hitRects.values.contains { $0.insetBy(dx: -4, dy: -4).contains(flipped) }
+        // hitRects are tall columns; only the card near the rope steals clicks,
+        // so browser tabs under empty gaps still work when the line stays down.
+        let cardH = Layout.photoMaxHeight + 48
+        var overPhoto = line.hitRects.values.contains { rect in
+            let card = CGRect(x: rect.minX, y: rect.minY, width: rect.width,
+                              height: min(rect.height, cardH))
+            return card.insetBy(dx: -4, dy: -4).contains(flipped)
+        }
         // A line longer than the screen also takes the band the photos hang
         // in, gaps included, so a swipe anywhere along it moves it.
         if !overPhoto, line.items.count > line.visibleCount, Line.keepOnLine != nil {
             let band = line.hitRects.values.reduce(CGRect.null) { $0.union($1) }
-            overPhoto = !band.isNull && flipped.y >= band.minY - 4 && flipped.y <= band.maxY + 4
+            let cardBand = CGRect(x: band.minX, y: band.minY, width: band.width,
+                                  height: min(band.height, cardH))
+            overPhoto = !band.isNull && cardBand.insetBy(dx: 0, dy: -4).contains(flipped)
         }
         if panel.ignoresMouseEvents == overPhoto {
             panel.ignoresMouseEvents = !overPhoto
