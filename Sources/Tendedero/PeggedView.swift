@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One photo with its clothespin. All the charm lives here: it drops onto
@@ -5,13 +6,18 @@ import SwiftUI
 struct PeggedView: View {
     let item: Pegged
     @ObservedObject var line: Line
+    /// Panel width, so the clip can write a normalized free place (0…1).
+    var width: CGFloat = 0
 
     @State private var swing: Double = 0
     @State private var arrived = false
     @State private var hovering = false
+    /// Pointer over the clip (not the photo body).
+    @State private var clipHovering = false
 
     private var copied: Bool { line.copiedID == item.id }
     private var dragging: Bool { line.draggingID == item.id }
+    private var placing: Bool { line.placingID == item.id }
 
     private var cornerSymbol: String {
         switch line.corner(of: item.id) {
@@ -24,7 +30,17 @@ struct PeggedView: View {
 
     var body: some View {
         VStack(spacing: -12) {
-            Clothespin(pinned: item.kept)
+            Clothespin(pinned: item.kept, color: item.clipColor)
+                // Wider than the metal so the clip is easy to grab and hover.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    clipHovering = inside
+                    updateClipCursor()
+                }
+                .gesture(placeGesture)
+                .contextMenu { clipColorMenu }
                 .zIndex(1)
             // Held in your hand: a faded trace of it waits on its clip.
             card
@@ -37,12 +53,81 @@ struct PeggedView: View {
         // The fall itself is drawn over the whole screen by CaptureFlight, so
         // the card here just steps aside at once.
         .opacity(item.falling || item.flying ? 0 : (arrived ? 1 : 0))
-        .transaction { t in if item.falling { t.animation = nil } }
+        .transaction { t in if item.falling || placing { t.animation = nil } }
         .animation(.easeOut(duration: 0.16), value: item.flying)
         .onAppear(perform: arrive)
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
         .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
+        .onChange(of: placing) { _, _ in updateClipCursor() }
+        .onDisappear {
+            clipHovering = false
+            if !placing { NSCursor.arrow.set() }
+        }
+    }
+
+    /// Drag the clip to free-place the photo along the rope. The photo body
+    /// keeps GrabArea's file drag; only the pin slides it.
+    private var placeGesture: some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("line"))
+            .onChanged { value in
+                guard width > 0, !item.falling, !item.held else { return }
+                if line.placingID != item.id {
+                    line.beginPlace(item.id)
+                    updateClipCursor()
+                }
+                let margin = max(Layout.cardWidth / 2 + 16, 80)
+                let x = min(max(value.location.x, margin), max(margin, width - margin))
+                line.setPlace(item.id, fraction: x / width)
+            }
+            .onEnded { _ in
+                line.endPlace(item.id)
+                updateClipCursor()
+            }
+    }
+
+    /// Open hand over the clip, closed hand while sliding it. Photo body keeps
+    /// the default arrow (GrabArea does not change the cursor).
+    private func updateClipCursor() {
+        if placing {
+            NSCursor.closedHand.set()
+        } else if clipHovering && !item.held && !item.falling {
+            NSCursor.openHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    /// Right-click the clip only — photo-body menus stay in GrabArea.
+    @ViewBuilder
+    private var clipColorMenu: some View {
+        Section(L("Clip color")) {
+            Button {
+                line.setClipColor(item.id, nil)
+            } label: {
+                if item.clipColor == nil {
+                    Label(L("Default"), systemImage: "checkmark")
+                } else {
+                    Text(L("Default"))
+                }
+            }
+            Divider()
+            ForEach(ClipColor.allCases) { color in
+                Button {
+                    line.setClipColor(item.id, color)
+                } label: {
+                    Label {
+                        Text(color.title)
+                    } icon: {
+                        if item.clipColor == color {
+                            Image(systemName: "checkmark")
+                        } else {
+                            Circle().fill(color.swatch).frame(width: 10, height: 10)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The photo fits inside the card area keeping its proportions, so the
@@ -110,6 +195,21 @@ struct PeggedView: View {
                     .opacity(hovering && !dragging && !item.held ? 1 : 0)
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
+            }
+            .overlay(alignment: .topTrailing) {
+                // Hold — same action as the photo menu. Recordings cannot be
+                // held. Hit-tested in GrabView's top-right corner.
+                if !item.isRecording {
+                    Image(systemName: "hand.raised")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 20, height: 20)
+                        .glassFrame(circle: true)
+                        .padding(3)
+                        .opacity(hovering && !dragging && !item.held ? 1 : 0)
+                        .scaleEffect(hovering ? 1 : 0.6)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay(GrabArea(item: item, line: line))
             .overlay(alignment: .bottom) {
@@ -192,12 +292,60 @@ extension View {
     }
 }
 
+/// Colors you can paint a clothespin, stored by `rawValue` in UserDefaults.
+enum ClipColor: String, CaseIterable, Identifiable, Equatable {
+    case red, orange, yellow, green, blue, purple, pink, grey
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .red: L("Red")
+        case .orange: L("Orange")
+        case .yellow: L("Yellow")
+        case .green: L("Green")
+        case .blue: L("Blue")
+        case .purple: L("Purple")
+        case .pink: L("Pink")
+        case .grey: L("Space Grey")
+        }
+    }
+
+    /// Solid chip for the context menu.
+    var swatch: Color {
+        switch self {
+        case .red: Color(red: 0.86, green: 0.28, blue: 0.28)
+        case .orange: Color(red: 0.92, green: 0.52, blue: 0.18)
+        case .yellow: Color(red: 0.92, green: 0.78, blue: 0.22)
+        case .green: Color(red: 0.32, green: 0.72, blue: 0.38)
+        case .blue: Color(red: 0.28, green: 0.52, blue: 0.92)
+        case .purple: Color(red: 0.58, green: 0.36, blue: 0.86)
+        case .pink: Color(red: 0.90, green: 0.40, blue: 0.62)
+        case .grey: Color(white: 0.38)
+        }
+    }
+
+    /// Brushed fill for the metal clip body.
+    var gradient: LinearGradient {
+        let c = swatch
+        return LinearGradient(
+            stops: [
+                .init(color: c.opacity(0.75), location: 0),
+                .init(color: c, location: 0.35),
+                .init(color: c.opacity(0.88), location: 0.65),
+                .init(color: c.opacity(0.65), location: 1),
+            ],
+            startPoint: .leading, endPoint: .trailing)
+    }
+}
+
 /// A minimal aluminium clip: a brushed metal pill with a slot where it
 /// grips the line, and a soft shadow so it reads on any background.
 struct Clothespin: View {
     /// Silver for what comes and goes, space grey for what you pinned, the
-    /// way Macs come in both: what stays on the line reads at a glance.
+    /// way Macs come in both — unless a custom `color` overrides both.
     var pinned = false
+    var color: ClipColor? = nil
 
     private let metal = LinearGradient(
         stops: [
@@ -217,24 +365,30 @@ struct Clothespin: View {
         ],
         startPoint: .leading, endPoint: .trailing)
 
+    private var fill: LinearGradient {
+        if let color { return color.gradient }
+        return pinned ? spaceGrey : metal
+    }
+
+    private var darkSlot: Bool { color != nil || pinned }
+
     var body: some View {
         RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-            .fill(pinned ? spaceGrey : metal)
+            .fill(fill)
             .frame(width: 9, height: 26)
             .overlay(
                 RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                    .stroke(LinearGradient(colors: [Color.white.opacity(pinned ? 0.45 : 0.9), Color.black.opacity(0.18)],
+                    .stroke(LinearGradient(colors: [Color.white.opacity(darkSlot ? 0.45 : 0.9), Color.black.opacity(0.18)],
                                            startPoint: .top, endPoint: .bottom),
                             lineWidth: 0.6)
             )
             .overlay(alignment: .top) {
                 // The slot the line passes through.
                 Capsule()
-                    .fill(Color.black.opacity(pinned ? 0.55 : 0.32))
+                    .fill(Color.black.opacity(darkSlot ? 0.55 : 0.32))
                     .frame(width: 5, height: 1.4)
                     .padding(.top, 8.5)
             }
             .shadow(color: .black.opacity(0.30), radius: 2, y: 1.5)
-            .allowsHitTesting(false)
     }
 }

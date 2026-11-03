@@ -57,6 +57,8 @@ final class Held: NSObject {
         panel = HeldPanel(content: view)
         super.init()
         view.onHangBack = { [weak self] in self?.hangBack() }
+        view.onKeepOnTop = { [weak self] in self?.toggleKeepOnTop() }
+        view.keepsOnTop = { [weak self] in self?.keepsOnTop ?? false }
         view.onZoom = { [weak self] factor, anchor in self?.zoom(by: factor, around: anchor) }
         view.onActualSize = { [weak self] in self?.actualSize() }
         view.onCopy = { line.copy(id) }
@@ -67,6 +69,19 @@ final class Held: NSObject {
         panel.minSize = NSSize(width: 80, height: 80)
         panel.setFrame(startFrame(on: screen), display: false)
         panel.orderFrontRegardless()
+    }
+
+    /// WeChat-style screen pin: above floating apps (and the clothesline).
+    /// Off restores the usual level under the line.
+    private var keepsOnTop = false
+
+    private func toggleKeepOnTop() {
+        keepsOnTop.toggle()
+        panel.level = keepsOnTop
+            ? .statusBar
+            : NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
+        if keepsOnTop { panel.orderFrontRegardless() }
+        view.refreshKeepOnTop()
     }
 
     /// In the middle of the screen, each new one a little lower and to the
@@ -103,9 +118,10 @@ final class Held: NSObject {
     }
 }
 
-/// Floats over every app and Space, under the line so it never covers it.
-/// A click makes it key without bringing Tendedero to the front, so the app
-/// you work in stays active; it then takes Escape and ⌘C.
+/// Floats over every app and Space, under the line so it never covers it —
+/// unless Keep on top raises it to statusBar. A click makes it key without
+/// bringing Tendedero to the front, so the app you work in stays active; it
+/// then takes Escape and ⌘C.
 private final class HeldPanel: NSPanel {
     init(content: NSView) {
         // Resizable from its edges and corners, like any window.
@@ -127,13 +143,15 @@ private final class HeldPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// The photo in a glass frame like the cards on the line. Its only control
-/// is the button in the corner, which hangs it back, shown on hover like the
-/// cards' own; everything else is in its menu.
+/// The photo in a glass frame like the cards on the line. Corner controls
+/// hang it back and keep it on top, shown on hover like the cards' own;
+/// everything else is in its menu.
 private final class HeldView: NSVisualEffectView {
     static let border: CGFloat = 6
 
     var onHangBack: () -> Void = {}
+    var onKeepOnTop: () -> Void = {}
+    var keepsOnTop: () -> Bool = { false }
     var onZoom: (CGFloat, NSPoint) -> Void = { _, _ in }
     var onActualSize: () -> Void = {}
     var onCopy: () -> Void = {}
@@ -142,6 +160,7 @@ private final class HeldView: NSVisualEffectView {
 
     private let photo = CALayer()
     private let hangBackButton = CornerButton(symbol: "arrow.up.to.line")
+    private let keepOnTopButton = CornerButton(symbol: "pin")
 
     init(image: NSImage) {
         super.init(frame: .zero)
@@ -162,11 +181,22 @@ private final class HeldView: NSVisualEffectView {
         hangBackButton.onPress = { [weak self] in self?.onHangBack() }
         hangBackButton.setAccessibilityLabel(L("Hang back"))
         addSubview(hangBackButton)
+        keepOnTopButton.alphaValue = 0
+        keepOnTopButton.onPress = { [weak self] in self?.onKeepOnTop() }
+        addSubview(keepOnTopButton)
+        refreshKeepOnTop()
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Pin fill and a11y title follow the keep-on-top state.
+    func refreshKeepOnTop() {
+        let on = keepsOnTop()
+        keepOnTopButton.setSymbol(on ? "pin.fill" : "pin")
+        keepOnTopButton.setAccessibilityLabel(on ? L("Don't keep on top") : L("Keep on top"))
+    }
 
     override func layout() {
         super.layout()
@@ -176,6 +206,7 @@ private final class HeldView: NSVisualEffectView {
         photo.contentsScale = window?.backingScaleFactor ?? 2
         CATransaction.commit()
         hangBackButton.frame = NSRect(x: 9, y: bounds.height - 29, width: 20, height: 20)
+        keepOnTopButton.frame = NSRect(x: bounds.width - 29, y: bounds.height - 29, width: 20, height: 20)
     }
 
     override func updateTrackingAreas() {
@@ -185,13 +216,14 @@ private final class HeldView: NSVisualEffectView {
         super.updateTrackingAreas()
     }
 
-    override func mouseEntered(with event: NSEvent) { showButton(true) }
-    override func mouseExited(with event: NSEvent) { showButton(false) }
+    override func mouseEntered(with event: NSEvent) { showButtons(true) }
+    override func mouseExited(with event: NSEvent) { showButtons(false) }
 
-    private func showButton(_ on: Bool) {
+    private func showButtons(_ on: Bool) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             hangBackButton.animator().alphaValue = on ? 1 : 0
+            keepOnTopButton.animator().alphaValue = on ? 1 : 0
         }
     }
 
@@ -230,6 +262,8 @@ private final class HeldView: NSVisualEffectView {
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
         menu.addItem(ClosureMenuItem(L("Hang back")) { [weak self] in self?.onHangBack() })
+        let pinTitle = keepsOnTop() ? L("Don't keep on top") : L("Keep on top")
+        menu.addItem(ClosureMenuItem(pinTitle) { [weak self] in self?.onKeepOnTop() })
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(L("Copy")) { [weak self] in self?.onCopy() })
         menu.addItem(ClosureMenuItem(L("Quick Look")) { [weak self] in self?.onQuickLook() })
@@ -242,6 +276,7 @@ private final class HeldView: NSVisualEffectView {
 /// A small glass disc with a symbol, as on the line's cards.
 private final class CornerButton: NSVisualEffectView {
     var onPress: () -> Void = {}
+    private let icon = NSImageView()
 
     init(symbol: String) {
         super.init(frame: .zero)
@@ -253,18 +288,21 @@ private final class CornerButton: NSVisualEffectView {
         layer?.masksToBounds = true
         layer?.borderWidth = 0.5
         layer?.borderColor = NSColor.white.withAlphaComponent(0.5).cgColor
-        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            ?? NSImage())
         icon.symbolConfiguration = .init(pointSize: 8, weight: .bold)
         icon.contentTintColor = .labelColor
         icon.frame = NSRect(x: 0, y: 0, width: 20, height: 20)
         icon.imageScaling = .scaleNone
         addSubview(icon)
+        setSymbol(symbol)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    func setSymbol(_ symbol: String) {
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage()
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }

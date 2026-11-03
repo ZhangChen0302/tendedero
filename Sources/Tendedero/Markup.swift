@@ -64,6 +64,10 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     /// the editor is open the backdrop is kept to the editor's frame, which
     /// also lets the editor move to the middle, and the shadow is hidden. These are Markup's own windows, found by name: if a
     /// later macOS renames them, the band comes back and nothing else breaks.
+    ///
+    /// The backdrop must not be forced while a mouse button is down: BlurWindow
+    /// and ShadowWindow ride with RemoteWindow, and setFrame on them mid-drag
+    /// fights the move (and mid-stroke drawing). Idle ticks re-clamp the band.
     private var tidying: Timer?
     private var centred = false
 
@@ -99,8 +103,12 @@ final class Markup: NSObject, NSSharingServiceDelegate {
                     editor.setFrameOrigin(NSPoint(x: (area.midX - editor.frame.width / 2).rounded(),
                                                   y: (area.midY - editor.frame.height / 2).rounded()))
                 }
+                // Skip backdrop clamping while the pointer is down so a drag
+                // of the editor (or a drawing stroke) is not snapped back.
+                let pointerDown = NSEvent.pressedMouseButtons != 0
                 for window in NSApp.windows where window.isVisible {
-                    if window.className.contains("BlurWindow"), window.frame != editor.frame {
+                    if window.className.contains("BlurWindow"),
+                       !pointerDown, window.frame != editor.frame {
                         window.setFrame(editor.frame, display: true)
                     } else if window.className.contains("ShadowWindow"), window.alphaValue > 0 {
                         window.alphaValue = 0

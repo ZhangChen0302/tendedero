@@ -43,6 +43,8 @@
 "Over full screen apps" = "在全屏 App 上";
 "Hang copied images" = "挂上复制的图片";
 "Images you copy hang on the line too" = "复制的图片也会挂上绳";
+"Stay visible until you hide it" = "保持展开，直到你手动隐藏";
+"Keep the line down" = "常驻显示晾衣绳";
 "Tendedero, hanging copied images" = "Tendedero，正在挂上复制的图片";
 "The line is empty" = "晾衣绳上是空的";
 "%d on the line" = "晾衣绳上有 %d 张";
@@ -65,6 +67,16 @@
 
 /* PeggedView */
 "Copied" = "已复制";
+"Clip color" = "夹子颜色";
+"Default" = "默认";
+"Red" = "红";
+"Orange" = "橙";
+"Yellow" = "黄";
+"Green" = "绿";
+"Blue" = "蓝";
+"Purple" = "紫";
+"Pink" = "粉";
+"Space Grey" = "深空灰";
 
 /* Pinning and holding photos */
 "Pin" = "固定";
@@ -72,4 +84,6 @@
 "Hold" = "拿在手上";
 "Hang back" = "放回绳上";
 "Hang everything back" = "全部放回绳上";
+"Keep on top" = "置顶";
+"Don't keep on top" = "取消置顶";
 "Actual Size" = "实际大小";

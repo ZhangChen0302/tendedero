@@ -71,6 +71,19 @@ enum Layout {
         let step = gaps > 0 ? min(spacing, max(0, width - 200) / gaps) : spacing
         return width / 2 - gaps * step / 2 + CGFloat(index) * step
     }
+
+    /// Where a photo hangs: its free place along the rope when set, otherwise
+    /// the packed slot. Free places are absolute on the panel (ignore scroll)
+    /// so a manually slid photo stays put while others scroll past.
+    static func resolveX(for item: Pegged, index: Int, count: Int, width: CGFloat,
+                         visible: Int, scroll: CGFloat, pinned: Int = 0) -> CGFloat {
+        let margin = max(cardWidth / 2 + 16, 80)
+        if let f = item.placeX, width > 0 {
+            return min(max(f * width, margin), max(margin, width - margin))
+        }
+        return x(index: index, count: count, width: width, visible: visible,
+                 scroll: scroll, pinned: pinned)
+    }
 }
 
 struct LineView: View {
@@ -95,12 +108,13 @@ struct LineView: View {
                 }
 
                 ForEach(Array(line.items.enumerated()), id: \.element.id) { index, item in
-                    let x = Layout.x(index: index, count: line.items.count, width: width,
-                                     visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
+                    let x = Layout.resolveX(for: item, index: index, count: line.items.count, width: width,
+                                            visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
                     // On a line that scrolls, a photo reaching the edge of the
                     // screen, or the knot it slips behind, dims and stops taking
-                    // clicks as soon as it starts to.
-                    let bounds = index >= line.pinnedLead ? scrollBounds(width: width) : nil
+                    // clicks as soon as it starts to. Free-placed photos stay on
+                    // the panel (no scroll), so they only fade at the screen edge.
+                    let bounds = item.placeX == nil && index >= line.pinnedLead ? scrollBounds(width: width) : nil
                     let cardLeft = x - Layout.cardWidth / 2, cardRight = x + Layout.cardWidth / 2
                     let out = bounds.map { cardLeft < $0.lowerBound || cardRight > $0.upperBound } == true
                     // On the left it fades gradually: whole in the first place,
@@ -111,17 +125,20 @@ struct LineView: View {
                         return min(1, max(0, (cardLeft - gone) / max(1, rest - gone)))
                     } ?? 1
                     let ropeY = Layout.ropeY(x: x, width: width)
-                    PeggedView(item: item, line: line)
+                    PeggedView(item: item, line: line, width: width)
                         .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
                         // Photos scrolled towards an edge fade out before they reach it.
                         .opacity(min(1, max(0, min(x, width - x) / 90)) * fadeIn
                                  * (bounds.map { cardRight > $0.upperBound } == true ? 0.35 : 1))
                         .animation(.easeOut(duration: 0.2), value: out)
                         .allowsHitTesting(!out)
-                        .zIndex(index < line.pinnedLead ? 1 : 0)
+                        .zIndex(line.placingID == item.id ? 2 : (index < line.pinnedLead ? 1 : 0))
                         .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
+                        // Clip-sliding must track the pointer without spring lag.
+                        .transaction { if line.placingID != nil { $0.animation = nil } }
                 }
             }
+            .coordinateSpace(name: "line")
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
             .animation(.easeInOut(duration: 0.3), value: line.items.isEmpty)
             .animation(.spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.kept))
@@ -161,8 +178,10 @@ struct LineView: View {
     /// leaves still counts, so the knot stays put until the gaps close.
     private func knotX(width: CGFloat) -> CGFloat? {
         guard let last = line.items.lastIndex(where: \.kept) else { return nil }
-        let x = { (i: Int) in Layout.x(index: i, count: line.items.count, width: width,
-                                       visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead) }
+        let x = { (i: Int) in
+            Layout.resolveX(for: line.items[i], index: i, count: line.items.count, width: width,
+                            visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
+        }
         // On a line that scrolls, the pinned photos stay put, and the knot with them.
         if Layout.pinnedEdge(count: line.items.count, width: width,
                              visible: line.visibleCount, pinned: line.pinnedLead) != nil {

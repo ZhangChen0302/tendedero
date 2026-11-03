@@ -45,6 +45,8 @@
 "Over full screen apps" = "Over full screen apps";
 "Hang copied images" = "Hang copied images";
 "Images you copy hang on the line too" = "Images you copy hang on the line too";
+"Stay visible until you hide it" = "Stay visible until you hide it";
+"Keep the line down" = "Keep the line down";
 "Tendedero, hanging copied images" = "Tendedero, hanging copied images";
 "The line is empty" = "The line is empty";
 "%d on the line" = "%d on the line";
@@ -67,6 +69,16 @@
 
 /* PeggedView */
 "Copied" = "Copied";
+"Clip color" = "Clip color";
+"Default" = "Default";
+"Red" = "Red";
+"Orange" = "Orange";
+"Yellow" = "Yellow";
+"Green" = "Green";
+"Blue" = "Blue";
+"Purple" = "Purple";
+"Pink" = "Pink";
+"Space Grey" = "Space Grey";
 
 /* Pinning and holding photos */
 "Pin" = "Pin";
@@ -74,4 +86,6 @@
 "Hold" = "Hold";
 "Hang back" = "Hang back";
 "Hang everything back" = "Hang everything back";
+"Keep on top" = "Keep on top";
+"Don't keep on top" = "Don't keep on top";
 "Actual Size" = "Actual Size";
