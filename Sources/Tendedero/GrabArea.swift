@@ -131,13 +131,21 @@ final class GrabView: NSView, NSDraggingSource {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The discard cross drawn in the top left corner of the card. It is
-    /// handled here because this view sits on top of the SwiftUI card.
+    /// Corner glass buttons drawn in SwiftUI (top-left discard, top-right
+    /// Quick Look). Hit-tested here because this view sits on top of the card.
     static let crossHitSize: CGFloat = 26
 
     private func isInCross(_ event: NSEvent) -> Bool {
         let p = convert(event.locationInWindow, from: nil)
         let corner = NSRect(x: 0, y: isFlipped ? 0 : bounds.height - Self.crossHitSize,
+                            width: Self.crossHitSize, height: Self.crossHitSize)
+        return corner.contains(p)
+    }
+
+    private func isInPeek(_ event: NSEvent) -> Bool {
+        let p = convert(event.locationInWindow, from: nil)
+        let corner = NSRect(x: bounds.width - Self.crossHitSize,
+                            y: isFlipped ? 0 : bounds.height - Self.crossHitSize,
                             width: Self.crossHitSize, height: Self.crossHitSize)
         return corner.contains(p)
     }
@@ -155,6 +163,11 @@ final class GrabView: NSView, NSDraggingSource {
         if isInCross(event) {
             downPoint = nil
             onDiscard()
+            return
+        }
+        if isInPeek(event) {
+            downPoint = nil
+            onForceClick()
             return
         }
         if event.clickCount == 2 {

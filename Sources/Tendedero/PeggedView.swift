@@ -196,6 +196,19 @@ struct PeggedView: View {
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
             }
+            .overlay(alignment: .topTrailing) {
+                // Quick Look — same action as force-click / the photo menu.
+                // Hit-tested in GrabView's top-right corner.
+                Image(systemName: "eye")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 20, height: 20)
+                    .glassFrame(circle: true)
+                    .padding(3)
+                    .opacity(hovering && !dragging && !item.held ? 1 : 0)
+                    .scaleEffect(hovering ? 1 : 0.6)
+                    .allowsHitTesting(false)
+            }
             .overlay(GrabArea(item: item, line: line))
             .overlay(alignment: .bottom) {
                 if copied {
