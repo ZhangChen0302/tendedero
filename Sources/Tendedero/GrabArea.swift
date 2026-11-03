@@ -45,6 +45,9 @@ struct GrabArea: NSViewRepresentable {
         view.onDiscard = { line.pressCorner(id) }
         view.onLongPress = { line.markup(id) }
         view.onForceClick = { line.quickLook(id) }
+        // Corner Hold matches the menu: photos only, not recordings.
+        view.canHold = !isRecording
+        view.onHold = { line.onHold?(id) }
         view.onPressChange = { pressed in line.pressedID = pressed ? id : nil }
         view.menuProvider = {
             let menu = NSMenu()
@@ -114,6 +117,9 @@ final class GrabView: NSView, NSDraggingSource {
     var onDiscard: () -> Void = {}
     var onLongPress: () -> Void = {}
     var onForceClick: () -> Void = {}
+    /// Top-right Hold corner; false for recordings (same rule as the menu).
+    var canHold = false
+    var onHold: () -> Void = {}
     var onPressChange: (Bool) -> Void = { _ in }
     var menuProvider: () -> NSMenu = { NSMenu() }
 
@@ -132,7 +138,7 @@ final class GrabView: NSView, NSDraggingSource {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     /// Corner glass buttons drawn in SwiftUI (top-left discard, top-right
-    /// Quick Look). Hit-tested here because this view sits on top of the card.
+    /// Hold). Hit-tested here because this view sits on top of the card.
     static let crossHitSize: CGFloat = 26
 
     private func isInCross(_ event: NSEvent) -> Bool {
@@ -142,7 +148,8 @@ final class GrabView: NSView, NSDraggingSource {
         return corner.contains(p)
     }
 
-    private func isInPeek(_ event: NSEvent) -> Bool {
+    private func isInHold(_ event: NSEvent) -> Bool {
+        guard canHold else { return false }
         let p = convert(event.locationInWindow, from: nil)
         let corner = NSRect(x: bounds.width - Self.crossHitSize,
                             y: isFlipped ? 0 : bounds.height - Self.crossHitSize,
@@ -165,9 +172,9 @@ final class GrabView: NSView, NSDraggingSource {
             onDiscard()
             return
         }
-        if isInPeek(event) {
+        if isInHold(event) {
             downPoint = nil
-            onForceClick()
+            onHold()
             return
         }
         if event.clickCount == 2 {
