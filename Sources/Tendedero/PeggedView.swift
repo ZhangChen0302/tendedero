@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One photo with its clothespin. All the charm lives here: it drops onto
@@ -11,6 +12,8 @@ struct PeggedView: View {
     @State private var swing: Double = 0
     @State private var arrived = false
     @State private var hovering = false
+    /// Pointer over the clip (not the photo body).
+    @State private var clipHovering = false
 
     private var copied: Bool { line.copiedID == item.id }
     private var dragging: Bool { line.draggingID == item.id }
@@ -28,10 +31,14 @@ struct PeggedView: View {
     var body: some View {
         VStack(spacing: -12) {
             Clothespin(pinned: item.kept)
-                // Wider than the metal so the clip is easy to grab.
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
+                // Wider than the metal so the clip is easy to grab and hover.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 .contentShape(Rectangle())
+                .onHover { inside in
+                    clipHovering = inside
+                    updateClipCursor()
+                }
                 .gesture(placeGesture)
                 .zIndex(1)
             // Held in your hand: a faded trace of it waits on its clip.
@@ -51,6 +58,11 @@ struct PeggedView: View {
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
         .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
+        .onChange(of: placing) { _, _ in updateClipCursor() }
+        .onDisappear {
+            clipHovering = false
+            if !placing { NSCursor.arrow.set() }
+        }
     }
 
     /// Drag the clip to free-place the photo along the rope. The photo body
@@ -59,14 +71,30 @@ struct PeggedView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .named("line"))
             .onChanged { value in
                 guard width > 0, !item.falling, !item.held else { return }
-                if line.placingID != item.id { line.beginPlace(item.id) }
+                if line.placingID != item.id {
+                    line.beginPlace(item.id)
+                    updateClipCursor()
+                }
                 let margin = max(Layout.cardWidth / 2 + 16, 80)
                 let x = min(max(value.location.x, margin), max(margin, width - margin))
                 line.setPlace(item.id, fraction: x / width)
             }
             .onEnded { _ in
                 line.endPlace(item.id)
+                updateClipCursor()
             }
+    }
+
+    /// Open hand over the clip, closed hand while sliding it. Photo body keeps
+    /// the default arrow (GrabArea does not change the cursor).
+    private func updateClipCursor() {
+        if placing {
+            NSCursor.closedHand.set()
+        } else if clipHovering && !item.held && !item.falling {
+            NSCursor.openHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
     }
 
     /// The photo fits inside the card area keeping its proportions, so the
