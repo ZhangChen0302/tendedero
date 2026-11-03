@@ -30,7 +30,7 @@ struct PeggedView: View {
 
     var body: some View {
         VStack(spacing: -12) {
-            Clothespin(pinned: item.kept)
+            Clothespin(pinned: item.kept, color: item.clipColor)
                 // Wider than the metal so the clip is easy to grab and hover.
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -40,6 +40,7 @@ struct PeggedView: View {
                     updateClipCursor()
                 }
                 .gesture(placeGesture)
+                .contextMenu { clipColorMenu }
                 .zIndex(1)
             // Held in your hand: a faded trace of it waits on its clip.
             card
@@ -94,6 +95,38 @@ struct PeggedView: View {
             NSCursor.openHand.set()
         } else {
             NSCursor.arrow.set()
+        }
+    }
+
+    /// Right-click the clip only — photo-body menus stay in GrabArea.
+    @ViewBuilder
+    private var clipColorMenu: some View {
+        Section(L("Clip color")) {
+            Button {
+                line.setClipColor(item.id, nil)
+            } label: {
+                if item.clipColor == nil {
+                    Label(L("Default"), systemImage: "checkmark")
+                } else {
+                    Text(L("Default"))
+                }
+            }
+            Divider()
+            ForEach(ClipColor.allCases) { color in
+                Button {
+                    line.setClipColor(item.id, color)
+                } label: {
+                    Label {
+                        Text(color.title)
+                    } icon: {
+                        if item.clipColor == color {
+                            Image(systemName: "checkmark")
+                        } else {
+                            Circle().fill(color.swatch).frame(width: 10, height: 10)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -244,12 +277,60 @@ extension View {
     }
 }
 
+/// Colors you can paint a clothespin, stored by `rawValue` in UserDefaults.
+enum ClipColor: String, CaseIterable, Identifiable, Equatable {
+    case red, orange, yellow, green, blue, purple, pink, grey
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .red: L("Red")
+        case .orange: L("Orange")
+        case .yellow: L("Yellow")
+        case .green: L("Green")
+        case .blue: L("Blue")
+        case .purple: L("Purple")
+        case .pink: L("Pink")
+        case .grey: L("Space Grey")
+        }
+    }
+
+    /// Solid chip for the context menu.
+    var swatch: Color {
+        switch self {
+        case .red: Color(red: 0.86, green: 0.28, blue: 0.28)
+        case .orange: Color(red: 0.92, green: 0.52, blue: 0.18)
+        case .yellow: Color(red: 0.92, green: 0.78, blue: 0.22)
+        case .green: Color(red: 0.32, green: 0.72, blue: 0.38)
+        case .blue: Color(red: 0.28, green: 0.52, blue: 0.92)
+        case .purple: Color(red: 0.58, green: 0.36, blue: 0.86)
+        case .pink: Color(red: 0.90, green: 0.40, blue: 0.62)
+        case .grey: Color(white: 0.38)
+        }
+    }
+
+    /// Brushed fill for the metal clip body.
+    var gradient: LinearGradient {
+        let c = swatch
+        return LinearGradient(
+            stops: [
+                .init(color: c.opacity(0.75), location: 0),
+                .init(color: c, location: 0.35),
+                .init(color: c.opacity(0.88), location: 0.65),
+                .init(color: c.opacity(0.65), location: 1),
+            ],
+            startPoint: .leading, endPoint: .trailing)
+    }
+}
+
 /// A minimal aluminium clip: a brushed metal pill with a slot where it
 /// grips the line, and a soft shadow so it reads on any background.
 struct Clothespin: View {
     /// Silver for what comes and goes, space grey for what you pinned, the
-    /// way Macs come in both: what stays on the line reads at a glance.
+    /// way Macs come in both — unless a custom `color` overrides both.
     var pinned = false
+    var color: ClipColor? = nil
 
     private let metal = LinearGradient(
         stops: [
@@ -269,20 +350,27 @@ struct Clothespin: View {
         ],
         startPoint: .leading, endPoint: .trailing)
 
+    private var fill: LinearGradient {
+        if let color { return color.gradient }
+        return pinned ? spaceGrey : metal
+    }
+
+    private var darkSlot: Bool { color != nil || pinned }
+
     var body: some View {
         RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-            .fill(pinned ? spaceGrey : metal)
+            .fill(fill)
             .frame(width: 9, height: 26)
             .overlay(
                 RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                    .stroke(LinearGradient(colors: [Color.white.opacity(pinned ? 0.45 : 0.9), Color.black.opacity(0.18)],
+                    .stroke(LinearGradient(colors: [Color.white.opacity(darkSlot ? 0.45 : 0.9), Color.black.opacity(0.18)],
                                            startPoint: .top, endPoint: .bottom),
                             lineWidth: 0.6)
             )
             .overlay(alignment: .top) {
                 // The slot the line passes through.
                 Capsule()
-                    .fill(Color.black.opacity(pinned ? 0.55 : 0.32))
+                    .fill(Color.black.opacity(darkSlot ? 0.55 : 0.32))
                     .frame(width: 5, height: 1.4)
                     .padding(.top, 8.5)
             }

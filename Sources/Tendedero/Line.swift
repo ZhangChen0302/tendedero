@@ -26,12 +26,16 @@ struct Pegged: Identifiable, Equatable {
     /// Free place along the rope: center of the card as a fraction of panel
     /// width (0…1). Nil means the packed slot from `Layout.x`.
     var placeX: CGFloat? = nil
+    /// Clip paint chosen from the clothespin menu. Nil means automatic:
+    /// metal when loose, space grey when pinned.
+    var clipColor: ClipColor? = nil
     /// A screen recording rather than a screenshot.
     var isRecording: Bool { Tendedero.isRecording(url) }
 
     static func == (a: Pegged, b: Pegged) -> Bool {
         a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.kept == b.kept
-            && a.byHand == b.byHand && a.held == b.held && a.placeX == b.placeX && a.thumb === b.thumb
+            && a.byHand == b.byHand && a.held == b.held && a.placeX == b.placeX
+            && a.clipColor == b.clipColor && a.thumb === b.thumb
     }
 }
 
@@ -262,7 +266,8 @@ final class Line: ObservableObject {
             drop(id, quietly: true)
             if let step, let index {
                 remember(TakenDown(url: item.url, index: index, trashed: trashed as URL?,
-                                   kept: item.kept, byHand: item.byHand, placeX: item.placeX), in: step)
+                                   kept: item.kept, byHand: item.byHand, placeX: item.placeX,
+                                   clipColor: item.clipColor), in: step)
             }
             return true
         } catch {
@@ -313,7 +318,8 @@ final class Line: ObservableObject {
         } else if let item = items.first(where: { $0.id == id && !$0.falling }), let index = liveIndex(of: id) {
             drop(id, quietly: quietly)
             remember(TakenDown(url: item.url, index: index, trashed: nil,
-                               kept: item.kept, byHand: item.byHand, placeX: item.placeX), in: step)
+                               kept: item.kept, byHand: item.byHand, placeX: item.placeX,
+                               clipColor: item.clipColor), in: step)
         }
     }
 
@@ -416,6 +422,7 @@ final class Line: ObservableObject {
         var kept = false
         var byHand = false
         var placeX: CGFloat? = nil
+        var clipColor: ClipColor? = nil
     }
 
     /// What was taken down, the latest last. A step holds everything one
@@ -447,6 +454,7 @@ final class Line: ObservableObject {
             item.kept = photo.kept
             item.byHand = photo.byHand
             item.placeX = photo.placeX
+            item.clipColor = photo.clipColor
             let live = items.filter { !$0.falling }
             if let gap = items.firstIndex(where: { $0.falling && $0.url == photo.url }) {
                 // Its empty place is still on the line: it hangs back there.
@@ -567,6 +575,14 @@ final class Line: ObservableObject {
         save()
     }
 
+    /// Paint the clothespin. Nil restores automatic metal / pinned space grey.
+    func setClipColor(_ id: UUID, _ color: ClipColor?) {
+        guard let i = items.firstIndex(where: { $0.id == id && !$0.falling }) else { return }
+        guard items[i].clipColor != color else { return }
+        items[i].clipColor = color
+        save()
+    }
+
     // MARK: Holding
 
     /// Off the line and into your hand, or back onto its clip.
@@ -594,6 +610,8 @@ final class Line: ObservableObject {
     private let byHandKey = "byHand"
     /// Free places keyed by file path, stored as Double fractions of width.
     private let placeKey = "placedX"
+    /// Clip colors keyed by file path (`ClipColor.rawValue`).
+    private let clipColorKey = "clipColor"
 
     private func save() {
         let live = items.filter { !$0.falling }
@@ -601,10 +619,13 @@ final class Line: ObservableObject {
         UserDefaults.standard.set(live.filter(\.kept).map(\.url.path), forKey: keptKey)
         UserDefaults.standard.set(live.filter(\.byHand).map(\.url.path), forKey: byHandKey)
         var places: [String: Double] = [:]
+        var colors: [String: String] = [:]
         for item in live {
             if let x = item.placeX { places[item.url.path] = Double(x) }
+            if let c = item.clipColor { colors[item.url.path] = c.rawValue }
         }
         UserDefaults.standard.set(places, forKey: placeKey)
+        UserDefaults.standard.set(colors, forKey: clipColorKey)
     }
 
     /// Everything comes back as it was. This runs before the line knows its
@@ -615,6 +636,7 @@ final class Line: ObservableObject {
         let kept = Set(UserDefaults.standard.stringArray(forKey: keptKey) ?? [])
         let byHand = Set(UserDefaults.standard.stringArray(forKey: byHandKey) ?? [])
         let places = UserDefaults.standard.dictionary(forKey: placeKey) as? [String: Double] ?? [:]
+        let colors = UserDefaults.standard.dictionary(forKey: clipColorKey) as? [String: String] ?? [:]
         for path in paths where FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
             guard !items.contains(where: { $0.url == url }), let thumb = makeThumbnail(url) else { continue }
@@ -622,6 +644,7 @@ final class Line: ObservableObject {
             item.byHand = byHand.contains(path)
             item.kept = kept.contains(path) || item.byHand
             if let x = places[path] { item.placeX = CGFloat(x) }
+            if let raw = colors[path] { item.clipColor = ClipColor(rawValue: raw) }
             items.append(item)
         }
         keepKeptFirst()

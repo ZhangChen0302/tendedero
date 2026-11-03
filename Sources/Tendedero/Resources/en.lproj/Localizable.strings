@@ -69,6 +69,16 @@
 
 /* PeggedView */
 "Copied" = "Copied";
+"Clip color" = "Clip color";
+"Default" = "Default";
+"Red" = "Red";
+"Orange" = "Orange";
+"Yellow" = "Yellow";
+"Green" = "Green";
+"Blue" = "Blue";
+"Purple" = "Purple";
+"Pink" = "Pink";
+"Space Grey" = "Space Grey";
 
 /* Pinning and holding photos */
 "Pin" = "Pin";
