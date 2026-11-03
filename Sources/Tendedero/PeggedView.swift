@@ -5,6 +5,8 @@ import SwiftUI
 struct PeggedView: View {
     let item: Pegged
     @ObservedObject var line: Line
+    /// Panel width, so the clip can write a normalized free place (0…1).
+    var width: CGFloat = 0
 
     @State private var swing: Double = 0
     @State private var arrived = false
@@ -12,6 +14,7 @@ struct PeggedView: View {
 
     private var copied: Bool { line.copiedID == item.id }
     private var dragging: Bool { line.draggingID == item.id }
+    private var placing: Bool { line.placingID == item.id }
 
     private var cornerSymbol: String {
         switch line.corner(of: item.id) {
@@ -25,6 +28,11 @@ struct PeggedView: View {
     var body: some View {
         VStack(spacing: -12) {
             Clothespin(pinned: item.kept)
+                // Wider than the metal so the clip is easy to grab.
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .gesture(placeGesture)
                 .zIndex(1)
             // Held in your hand: a faded trace of it waits on its clip.
             card
@@ -37,12 +45,28 @@ struct PeggedView: View {
         // The fall itself is drawn over the whole screen by CaptureFlight, so
         // the card here just steps aside at once.
         .opacity(item.falling || item.flying ? 0 : (arrived ? 1 : 0))
-        .transaction { t in if item.falling { t.animation = nil } }
+        .transaction { t in if item.falling || placing { t.animation = nil } }
         .animation(.easeOut(duration: 0.16), value: item.flying)
         .onAppear(perform: arrive)
         .onChange(of: item.flying) { was, now in if was && !now { land() } }
         .onChange(of: line.gust) { _, _ in breeze() }
         .onChange(of: copied) { _, isCopied in if isCopied { nudge(3) } }
+    }
+
+    /// Drag the clip to free-place the photo along the rope. The photo body
+    /// keeps GrabArea's file drag; only the pin slides it.
+    private var placeGesture: some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("line"))
+            .onChanged { value in
+                guard width > 0, !item.falling, !item.held else { return }
+                if line.placingID != item.id { line.beginPlace(item.id) }
+                let margin = max(Layout.cardWidth / 2 + 16, 80)
+                let x = min(max(value.location.x, margin), max(margin, width - margin))
+                line.setPlace(item.id, fraction: x / width)
+            }
+            .onEnded { _ in
+                line.endPlace(item.id)
+            }
     }
 
     /// The photo fits inside the card area keeping its proportions, so the
@@ -235,6 +259,5 @@ struct Clothespin: View {
                     .padding(.top, 8.5)
             }
             .shadow(color: .black.opacity(0.30), radius: 2, y: 1.5)
-            .allowsHitTesting(false)
     }
 }

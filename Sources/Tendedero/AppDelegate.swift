@@ -405,8 +405,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cardFrame(for id: UUID) -> CGRect? {
         guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: line.items.count, width: width,
-                         visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
+        let x = Layout.resolveX(for: line.items[index], index: index, count: line.items.count, width: width,
+                                visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
         let size = PeggedView.cardSize(for: line.items[index].thumb.size)
@@ -675,7 +675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Gaps left by discarded photos close once the pointer moves away.
         if !inside { line.closeGaps() }
 
-        let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu
+        let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu || line.placingID != nil
             || line.pressedID != nil || now < peekUntil || Self.staysDown
         if inside || busy {
             awaySince = nil
@@ -693,7 +693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// mouse while the cursor is over a photo. Everywhere else, clicks go to
     /// whatever is underneath.
     private func updateMousePassThrough(_ mouse: NSPoint) {
-        guard !GrabView.isDragging else { return }
+        guard !GrabView.isDragging, line.placingID == nil else { return }
         // Only while a drag is actually in progress (or already over DropZone)
         // take the whole strip. dragLooksLikeImages alone is not enough: the
         // drag pasteboard can linger and would block clicks under a stayed-down line.

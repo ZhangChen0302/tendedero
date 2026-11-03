@@ -23,11 +23,15 @@ struct Pegged: Identifiable, Equatable {
     /// Hung from another app with Hang on Tendedero, rather than pinned
     /// from the photos that came and went. Always pinned.
     var byHand = false
+    /// Free place along the rope: center of the card as a fraction of panel
+    /// width (0…1). Nil means the packed slot from `Layout.x`.
+    var placeX: CGFloat? = nil
     /// A screen recording rather than a screenshot.
     var isRecording: Bool { Tendedero.isRecording(url) }
 
     static func == (a: Pegged, b: Pegged) -> Bool {
-        a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.kept == b.kept && a.byHand == b.byHand && a.held == b.held && a.thumb === b.thumb
+        a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.kept == b.kept
+            && a.byHand == b.byHand && a.held == b.held && a.placeX == b.placeX && a.thumb === b.thumb
     }
 }
 
@@ -39,6 +43,8 @@ final class Line: ObservableObject {
     @Published private(set) var gust = 0
     @Published var copiedID: UUID?
     @Published var draggingID: UUID?
+    /// Sliding a photo along the rope by its clothespin.
+    @Published var placingID: UUID?
     @Published var pressedID: UUID?
     /// Whether the line has slid down into view.
     @Published var revealed = false
@@ -255,7 +261,8 @@ final class Line: ObservableObject {
             if soundOn && !quietly { Line.trashSound?.play() }
             drop(id, quietly: true)
             if let step, let index {
-                remember(TakenDown(url: item.url, index: index, trashed: trashed as URL?, kept: item.kept, byHand: item.byHand), in: step)
+                remember(TakenDown(url: item.url, index: index, trashed: trashed as URL?,
+                                   kept: item.kept, byHand: item.byHand, placeX: item.placeX), in: step)
             }
             return true
         } catch {
@@ -305,7 +312,8 @@ final class Line: ObservableObject {
             trash(id, quietly: quietly, step: step)
         } else if let item = items.first(where: { $0.id == id && !$0.falling }), let index = liveIndex(of: id) {
             drop(id, quietly: quietly)
-            remember(TakenDown(url: item.url, index: index, trashed: nil, kept: item.kept, byHand: item.byHand), in: step)
+            remember(TakenDown(url: item.url, index: index, trashed: nil,
+                               kept: item.kept, byHand: item.byHand, placeX: item.placeX), in: step)
         }
     }
 
@@ -407,6 +415,7 @@ final class Line: ObservableObject {
         let trashed: URL?
         var kept = false
         var byHand = false
+        var placeX: CGFloat? = nil
     }
 
     /// What was taken down, the latest last. A step holds everything one
@@ -437,6 +446,7 @@ final class Line: ObservableObject {
             var item = Pegged(url: url, thumb: thumb)
             item.kept = photo.kept
             item.byHand = photo.byHand
+            item.placeX = photo.placeX
             let live = items.filter { !$0.falling }
             if let gap = items.firstIndex(where: { $0.falling && $0.url == photo.url }) {
                 // Its empty place is still on the line: it hangs back there.
@@ -537,6 +547,26 @@ final class Line: ObservableObject {
         return true
     }
 
+    // MARK: Free place along the rope
+
+    /// Slide a photo by its clip. `fraction` is the card center in panel
+    /// width (0…1). Pass nil to return it to the packed slot.
+    func setPlace(_ id: UUID, fraction: CGFloat?) {
+        guard let i = items.firstIndex(where: { $0.id == id && !$0.falling }) else { return }
+        let next = fraction.map { min(max($0, 0), 1) }
+        guard items[i].placeX != next else { return }
+        items[i].placeX = next
+    }
+
+    func beginPlace(_ id: UUID) {
+        placingID = id
+    }
+
+    func endPlace(_ id: UUID) {
+        if placingID == id { placingID = nil }
+        save()
+    }
+
     // MARK: Holding
 
     /// Off the line and into your hand, or back onto its clip.
@@ -553,7 +583,7 @@ final class Line: ObservableObject {
     private func scheduleGust() {
         DispatchQueue.main.asyncAfter(deadline: .now() + .random(in: 7...16)) { [weak self] in
             guard let self else { return }
-            if !self.items.isEmpty && self.draggingID == nil { self.gust += 1 }
+            if !self.items.isEmpty && self.draggingID == nil && self.placingID == nil { self.gust += 1 }
             self.scheduleGust()
         }
     }
@@ -562,12 +592,19 @@ final class Line: ObservableObject {
 
     private let keptKey = "kept"
     private let byHandKey = "byHand"
+    /// Free places keyed by file path, stored as Double fractions of width.
+    private let placeKey = "placedX"
 
     private func save() {
         let live = items.filter { !$0.falling }
         UserDefaults.standard.set(live.map(\.url.path), forKey: storeKey)
         UserDefaults.standard.set(live.filter(\.kept).map(\.url.path), forKey: keptKey)
         UserDefaults.standard.set(live.filter(\.byHand).map(\.url.path), forKey: byHandKey)
+        var places: [String: Double] = [:]
+        for item in live {
+            if let x = item.placeX { places[item.url.path] = Double(x) }
+        }
+        UserDefaults.standard.set(places, forKey: placeKey)
     }
 
     /// Everything comes back as it was. This runs before the line knows its
@@ -577,12 +614,14 @@ final class Line: ObservableObject {
         let paths = UserDefaults.standard.stringArray(forKey: storeKey) ?? []
         let kept = Set(UserDefaults.standard.stringArray(forKey: keptKey) ?? [])
         let byHand = Set(UserDefaults.standard.stringArray(forKey: byHandKey) ?? [])
+        let places = UserDefaults.standard.dictionary(forKey: placeKey) as? [String: Double] ?? [:]
         for path in paths where FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
             guard !items.contains(where: { $0.url == url }), let thumb = makeThumbnail(url) else { continue }
             var item = Pegged(url: url, thumb: thumb)
             item.byHand = byHand.contains(path)
             item.kept = kept.contains(path) || item.byHand
+            if let x = places[path] { item.placeX = CGFloat(x) }
             items.append(item)
         }
         keepKeptFirst()
