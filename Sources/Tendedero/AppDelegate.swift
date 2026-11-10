@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
     private var mouseTimer: Timer?
+    /// Always on: detects Finder image drags toward the menu bar so an empty line can open for a drop.
+    private var dragPoll: Timer?
 
     /// Whether the panel is ordered in. It can be in and still tucked away
     /// above the top edge, like an auto-hiding Dock.
@@ -66,10 +68,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(!newValue, forKey: "quietHang") }
     }
 
+    /// Keep the line down until you hide it. Off, it tucks away when the
+    /// pointer leaves, like the Dock with auto-hide.
+    static var staysDown: Bool {
+        get { UserDefaults.standard.bool(forKey: "lineStaysDown") }
+        set { UserDefaults.standard.set(newValue, forKey: "lineStaysDown") }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let host = NSHostingView(rootView: LineView(line: line))
         host.sizingOptions = []
         panel = LinePanel(content: host)
+        panel.dropZone.onDrop = { [weak self] urls in
+            guard let self else { return false }
+            self.comeDown(on: nil)
+            var any = false
+            for url in urls where self.line.hangKept(url) { any = true }
+            if !any { NSSound.beep() }
+            return any
+        }
+        panel.dropZone.onDragSession = { [weak self] active in
+            guard let self else { return }
+            if active {
+                self.comeDown(on: nil)
+                self.panel.ignoresMouseEvents = false
+            }
+        }
         panel.placeOnScreen()
         updateCapacity()
 
@@ -78,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startWatcher()
         clipboardWatcher = ClipboardWatcher { [weak self] url in self?.hangCapture(url) }
         if ClipboardWatcher.isEnabled { clipboardWatcher.start() }
+        startDragPoll()
 
         registerShortcut()
 
@@ -106,6 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .store(in: &cancellables)
         // Photos kept from last time show themselves for a moment.
         if line.liveCount > 0 { comeDown(on: nil) }
+        if Self.staysDown {
+            keepOpen = true
+            wanted = true
+            openedOnPurpose = true
+            refresh()
+            reveal(pinned: true)
+        }
 
         // Entering or leaving full screen switches Space. Check again once the
         // switch animation has settled.
@@ -244,6 +276,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Watching the clipboard is opt in, from the menu bar only.
+    private func setStaysDown(_ on: Bool) {
+        Self.staysDown = on
+        if on {
+            keepOpen = true
+            wanted = true
+            openedOnPurpose = true
+            panel.placeOnScreen()
+            updateCapacity()
+            refresh()
+            reveal(pinned: true)
+        }
+    }
+
     private func setClipboard(_ on: Bool) {
         ClipboardWatcher.isEnabled = on
         if on { clipboardWatcher.start() } else { clipboardWatcher.stop() }
@@ -271,9 +316,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func itemsChanged() {
         updateStatusIcon()
         Held.forget(except: Set(line.items.filter { !$0.falling && $0.held }.map(\.id)))
-        guard line.liveCount == 0, !keepOpen else { return }
+        guard line.liveCount == 0, !keepOpen, !Self.staysDown else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            guard let self, self.line.liveCount == 0, !self.keepOpen else { return }
+            guard let self, self.line.liveCount == 0, !self.keepOpen, !Self.staysDown else { return }
             self.wanted = false
             self.refresh()
         }
@@ -360,8 +405,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func cardFrame(for id: UUID) -> CGRect? {
         guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: line.items.count, width: width,
-                         visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
+        let x = Layout.resolveX(for: line.items[index], index: index, count: line.items.count, width: width,
+                                visible: line.visibleCount, scroll: line.scroll, pinned: line.pinnedLead)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
         let size = PeggedView.cardSize(for: line.items[index].thumb.size)
@@ -417,6 +462,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         old.orderOut(nil)
         let fresh = LinePanel(content: content ?? NSView())
         fresh.onScroll = old.onScroll
+        fresh.dropZone.onDrop = old.dropZone.onDrop
+        fresh.dropZone.onDragSession = old.dropZone.onDragSession
         fresh.setFrame(old.frame, display: false)
         fresh.ignoresMouseEvents = old.ignoresMouseEvents
         fresh.alphaValue = old.alphaValue
@@ -458,11 +505,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panel.ignoresMouseEvents = true
             // Opened on purpose lasts until the line tucks away, however that
             // happens: an empty line then goes, as with the shortcut, and over
-            // a full screen app the line goes too.
+            // a full screen app the line goes too. Stay-down keeps the empty
+            // line available until you turn that off.
             if keepOpen || openedOnPurpose {
-                keepOpen = false
-                openedOnPurpose = false
-                if line.liveCount == 0 { wanted = false }
+                keepOpen = Self.staysDown
+                openedOnPurpose = Self.staysDown
+                if line.liveCount == 0 && !Self.staysDown { wanted = false }
                 refresh()
             }
         }
@@ -480,6 +528,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refresh()
             reveal(pinned: true)
         }
+    }
+
+    private func startDragPoll() {
+        guard dragPoll == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollExternalDrag() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dragPoll = timer
+    }
+
+    /// When images are dragged over the menu-bar reveal band, open the line
+    /// even if it is empty so DropZone has a target.
+    private func pollExternalDrag() {
+        guard DropZone.dragLooksLikeImages() else { return }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }),
+              NSMouseInRect(mouse, Self.revealBand(of: screen), false),
+              !menuBarSuppressed,
+              !FullScreen.blocksLine(on: screen) else { return }
+        keepOpen = true
+        wanted = true
+        panel.placeOnScreen(screen)
+        updateCapacity()
+        refresh()
+        reveal(pinned: true)
+        // Pass-through stays on until the drag actually enters DropZone;
+        // otherwise a sticky drag pasteboard would block clicks under the line.
     }
 
     private func startMouseTracking() {
@@ -564,7 +640,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // never stops.
             // An empty line stays up there: only the shortcut and the menu
             // bring it down on purpose.
-            if line.liveCount > 0, Self.opensFromMenuBar, let screen = screenUnderPointer,
+            // Dragging images to the menu bar also brings an empty line down
+            // so there is somewhere to drop.
+            let dragImages = DropZone.dragLooksLikeImages()
+            if (line.liveCount > 0 || dragImages), Self.opensFromMenuBar, let screen = screenUnderPointer,
                inRevealBand, !menuBarSuppressed, !FullScreen.blocksLine(on: screen) {
                 let since = hotZoneSince ?? now
                 hotZoneSince = since
@@ -596,8 +675,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Gaps left by discarded photos close once the pointer moves away.
         if !inside { line.closeGaps() }
 
-        let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu
-            || line.pressedID != nil || now < peekUntil
+        let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu || line.placingID != nil
+            || line.pressedID != nil || now < peekUntil || Self.staysDown
         if inside || busy {
             awaySince = nil
         } else {
@@ -614,15 +693,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// mouse while the cursor is over a photo. Everywhere else, clicks go to
     /// whatever is underneath.
     private func updateMousePassThrough(_ mouse: NSPoint) {
-        guard !GrabView.isDragging else { return }
+        guard !GrabView.isDragging, line.placingID == nil else { return }
+        // Only while a drag is actually in progress (or already over DropZone)
+        // take the whole strip. dragLooksLikeImages alone is not enough: the
+        // drag pasteboard can linger and would block clicks under a stayed-down line.
+        let draggingImages = DropZone.isReceiving
+            || (NSEvent.pressedMouseButtons != 0 && DropZone.dragLooksLikeImages())
+        if draggingImages {
+            if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
+            return
+        }
         let local = panel.convertPoint(fromScreen: mouse)
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
-        var overPhoto = line.hitRects.values.contains { $0.insetBy(dx: -4, dy: -4).contains(flipped) }
+        // hitRects are tall columns; only the card near the rope steals clicks,
+        // so browser tabs under empty gaps still work when the line stays down.
+        let cardH = Layout.photoMaxHeight + 48
+        var overPhoto = line.hitRects.values.contains { rect in
+            let card = CGRect(x: rect.minX, y: rect.minY, width: rect.width,
+                              height: min(rect.height, cardH))
+            return card.insetBy(dx: -4, dy: -4).contains(flipped)
+        }
         // A line longer than the screen also takes the band the photos hang
         // in, gaps included, so a swipe anywhere along it moves it.
         if !overPhoto, line.items.count > line.visibleCount, Line.keepOnLine != nil {
             let band = line.hitRects.values.reduce(CGRect.null) { $0.union($1) }
-            overPhoto = !band.isNull && flipped.y >= band.minY - 4 && flipped.y <= band.maxY + 4
+            let cardBand = CGRect(x: band.minX, y: band.minY, width: band.width,
+                                  height: min(band.height, cardH))
+            overPhoto = !band.isNull && cardBand.insetBy(dx: 0, dy: -4).contains(flipped)
         }
         if panel.ignoresMouseEvents == overPhoto {
             panel.ignoresMouseEvents = !overPhoto
@@ -860,6 +957,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clipboard.state = ClipboardWatcher.isEnabled ? .on : .off
         clipboard.toolTip = L("Images you copy hang on the line too")
         menu.addItem(clipboard)
+
+        let stay = ClosureMenuItem(L("Keep the line down")) { [weak self] in
+            self?.setStaysDown(!AppDelegate.staysDown)
+        }
+        stay.state = Self.staysDown ? .on : .off
+        stay.toolTip = L("Stay visible until you hide it")
+        menu.addItem(stay)
 
         let bringDown = NSMenuItem(title: L("Bring the line down"), action: nil, keyEquivalent: "")
         let options = NSMenu()

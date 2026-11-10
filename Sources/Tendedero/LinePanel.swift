@@ -4,6 +4,9 @@ import AppKit
 /// app and every Space except full screen ones, never takes focus, and lets clicks pass through
 /// everywhere except over the photos.
 final class LinePanel: NSPanel {
+    /// Root that receives image drops onto the line.
+    let dropZone = DropZone()
+
     init(content: NSView) {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
@@ -18,7 +21,10 @@ final class LinePanel: NSPanel {
         isMovable = false
         becomesKeyOnlyIfNeeded = true
         ignoresMouseEvents = true
-        contentView = content
+        dropZone.autoresizingMask = [.width, .height]
+        content.autoresizingMask = [.width, .height]
+        dropZone.addSubview(content)
+        contentView = dropZone
     }
 
     /// Two-finger swipes and the scroll wheel, for moving along a long line.
