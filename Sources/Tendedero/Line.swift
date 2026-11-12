@@ -441,8 +441,9 @@ final class Line: ObservableObject {
         }
     }
 
-    /// Put back, or ⌘Z over the line: what was taken down last hangs again
-    /// where it was, and a file sent to the Trash comes back out of it.
+    /// Put back (status menu, or ⌘Z over the line when Markup is not open):
+    /// what was taken down last hangs again where it was, and a file sent to
+    /// the Trash comes back out of it.
     func putBack() {
         guard let step = steps.popLast() else { return }
         var back: Set<UUID> = []

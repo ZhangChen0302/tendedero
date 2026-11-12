@@ -114,7 +114,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSUpdateDynamicServices()
 
         Markup.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
+        // While Markup is open, ⌘Z must undo strokes — release Put back's hot key at once.
+        Markup.shared.onEditingChange = { [weak self] open in
+            if open { self?.holdPutBackKey(false) }
+        }
         Trim.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
+        installEditMenu()
         panel.onScroll = { [weak self] event in
             // Sideways on a trackpad, or the wheel of a mouse.
             let delta = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
@@ -803,9 +808,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Putting back
 
-    /// ⌘Z while the pointer is on the line. The line never takes the
-    /// keyboard, so it only borrows ⌘Z then, as a hot key. Everywhere else
-    /// ⌘Z stays the undo of the app you are in.
+    /// ⌘Z while the pointer is on the line and Markup is not open. The line
+    /// never takes the keyboard, so it only borrows ⌘Z then, as a hot key.
+    /// Everywhere else — and while Markup is frontmost — ⌘Z stays undo.
     private var putBackKey: HotKey?
 
     /// Set when another app holds ⌘Z, so it is not asked for again on every
@@ -813,7 +818,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var putBackKeyRefused = false
 
     private func holdPutBackKey(_ hold: Bool) {
-        guard hold && line.canPutBack else {
+        // Markup activates Tendedero and needs ⌘Z / ⌘⇧Z for stroke undo/redo.
+        guard hold && line.canPutBack && !Markup.shared.isOpen else {
             putBackKey = nil
             putBackKeyRefused = false
             return
@@ -886,6 +892,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line.maxItems = max(fits, Line.keepOnLine ?? fits)
     }
 
+    // MARK: Edit menu
+
+    /// Accessory apps ship with no main menu. Markup's RemoteWindow still
+    /// expects the standard Edit > Undo / Redo key equivalents so ⌘Z and
+    /// ⌘⇧Z reach the editor after Put back stops claiming them.
+    private func installEditMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        editItem.submenu = edit
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        NSApp.mainMenu = main
+    }
+
     // MARK: Menu bar
 
     private func setUpStatusItem() {
@@ -934,7 +958,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clearItem.isEnabled = line.liveCount > 0
         menu.addItem(clearItem)
 
-        let putBackItem = ClosureMenuItem(L("Put back"), key: "z") { [weak self] in
+        // No ⌘Z here: a status-menu key equivalent (even a disabled one) is
+        // matched while Tendedero is active, which stole Markup stroke undo.
+        let putBackItem = ClosureMenuItem(L("Put back")) { [weak self] in
             self?.putBack()
         }
         putBackItem.isEnabled = line.canPutBack

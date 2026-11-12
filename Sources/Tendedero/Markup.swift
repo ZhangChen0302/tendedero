@@ -11,6 +11,19 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     /// Called with the file once the edited image has been written back.
     var onSaved: (URL) -> Void = { _ in }
 
+    /// Fired when the hosted Markup editor opens or finishes closing. Used so
+    /// Put back's temporary ⌘Z hot key is released while Markup needs ⌘Z.
+    var onEditingChange: (Bool) -> Void = { _ in }
+
+    /// True from `edit` until the RemoteWindow has been gone long enough to
+    /// tuck the invisible anchor away.
+    private(set) var isOpen = false {
+        didSet {
+            guard isOpen != oldValue else { return }
+            onEditingChange(isOpen)
+        }
+    }
+
     private var editing: URL?
     private static let serviceName = NSSharingService.Name("com.apple.MarkupUI.Markup")
 
@@ -38,7 +51,10 @@ final class Markup: NSObject, NSSharingServiceDelegate {
 
     nonisolated func sharingService(_ sharingService: NSSharingService,
                                     didFailToShareItems items: [Any], error: Error) {
-        log.notice("Markup ended without saving: \(error.localizedDescription, privacy: .public)")
+        MainActor.assumeIsolated {
+            self.editing = nil
+            log.notice("Markup ended without saving: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Markup opens its editor over the window it was shared from, and
@@ -46,8 +62,11 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     /// Tendedero has no window to share from, and without one the editor
     /// lands in a corner of whichever screen macOS picks. An invisible window
     /// in the middle of the screen under the pointer gives it a place.
+    ///
+    /// Borderless windows already refuse key status; the subclass keeps that
+    /// explicit so the invisible host never steals ⌘Z from Markup's editor.
     private lazy var anchor: NSWindow = {
-        let window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        let window = AnchorWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.ignoresMouseEvents = true
@@ -74,6 +93,7 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     private func tidyEditor() {
         tidying?.invalidate()
         centred = false
+        isOpen = true
         let start = Date()
         var shown = false
         var gone: Date?
@@ -91,18 +111,23 @@ final class Markup: NSObject, NSSharingServiceDelegate {
                     if Date().timeIntervalSince(since) > 0.5 {
                         timer.invalidate()
                         self.tidying = nil
+                        self.isOpen = false
                     }
                     return
                 }
-                shown = true
                 gone = nil
                 // Markup keeps the editor to the left of the space it was
-                // given. Once, as it shows up, it moves to the middle.
+                // given. Once, as it shows up, it moves to the middle and
+                // becomes key so drawing undo (⌘Z) reaches the RemoteWindow.
                 if !self.centred, let area = editor.screen?.visibleFrame {
                     self.centred = true
                     editor.setFrameOrigin(NSPoint(x: (area.midX - editor.frame.width / 2).rounded(),
                                                   y: (area.midY - editor.frame.height / 2).rounded()))
+                    if !shown { editor.makeKeyAndOrderFront(nil) }
+                } else if !shown {
+                    editor.makeKeyAndOrderFront(nil)
                 }
+                shown = true
                 // Skip backdrop clamping while the pointer is down so a drag
                 // of the editor (or a drawing stroke) is not snapped back.
                 let pointerDown = NSEvent.pressedMouseButtons != 0
@@ -118,6 +143,12 @@ final class Markup: NSObject, NSSharingServiceDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         tidying = timer
+    }
+
+    /// Invisible share-source window that must never become key.
+    private final class AnchorWindow: NSWindow {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
     }
 
     private func placeAnchor() {
