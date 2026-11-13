@@ -119,7 +119,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if open { self?.holdPutBackKey(false) }
         }
         Trim.shared.onSaved = { [weak self] url in self?.line.reloadThumbnail(for: url) }
-        installEditMenu()
         panel.onScroll = { [weak self] event in
             // Sideways on a trackpad, or the wheel of a mouse.
             let delta = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
@@ -890,24 +889,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fits = max(3, min(12, Int(usable / Layout.spacing)))
         line.visibleCount = fits
         line.maxItems = max(fits, Line.keepOnLine ?? fits)
-    }
-
-    // MARK: Edit menu
-
-    /// Accessory apps ship with no main menu. Markup's RemoteWindow still
-    /// expects the standard Edit > Undo / Redo key equivalents so ⌘Z and
-    /// ⌘⇧Z reach the editor after Put back stops claiming them.
-    private func installEditMenu() {
-        let main = NSMenu()
-        let editItem = NSMenuItem()
-        main.addItem(editItem)
-        let edit = NSMenu(title: "Edit")
-        editItem.submenu = edit
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
-        edit.addItem(redo)
-        NSApp.mainMenu = main
     }
 
     // MARK: Menu bar
