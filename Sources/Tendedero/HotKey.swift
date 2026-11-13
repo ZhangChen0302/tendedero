@@ -51,9 +51,10 @@ struct Shortcut: Equatable {
 
     static let standard = Shortcut(keyCode: kVK_ANSI_T, modifiers: [.control, .option], key: "t")
 
-    /// ⌘Z, for Put back while the pointer is on the line. A hot key is a key
-    /// on the keyboard, not a letter, so it is the key that types Z with
-    /// Command held in the layout in use: on AZERTY, where QWERTY has W.
+    /// ⌘Z, for Put back while the pointer is on the line and Markup is not
+    /// open. A hot key is a key on the keyboard, not a letter, so it is the
+    /// key that types Z with Command held in the layout in use: on AZERTY,
+    /// where QWERTY has W.
     static var putBack: Shortcut {
         Shortcut(keyCode: keyCode(typing: "z") ?? kVK_ANSI_Z, modifiers: .command, key: "z")
     }

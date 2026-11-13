@@ -1,12 +1,14 @@
 #!/bin/bash
 # Builds Tendedero.app into ./build without needing Xcode.
 # Usage: scripts/build-app.sh [debug|release]
+# ExceptionCatch.m (ObjC helper for MarkupUI setFileURL) is compiled by
+# `swift build` via Package.swift — do not strip .m sources from the target.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
 APP="build/Tendedero.app"
-VERSION="1.8.9-markupdrag"
+VERSION="2.0.0-markupundo"
 
 # Builds one architecture and prints the binary's path.
 # The Command Line Tools for macOS 27 ship an SDK whose SwiftUI needs a macro
@@ -68,7 +70,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>Tendedero</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleVersion</key><string>11</string>
+  <key>CFBundleVersion</key><string>20</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleLocalizations</key><array>${LANGUAGES}</array>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
@@ -87,7 +89,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>NSMessage</key><string>hangOnLine</string>
       <key>NSPortName</key><string>Tendedero</string>
       <key>NSRequiredContext</key><dict/>
-      <key>NSSendFileTypes</key><array><string>public.image</string></array>
+      <key>NSSendFileTypes</key><array><string>public.image</string><string>public.plain-text</string><string>public.rtf</string></array>
     </dict>
   </array>
 </dict>

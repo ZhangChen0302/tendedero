@@ -11,21 +11,79 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     /// Called with the file once the edited image has been written back.
     var onSaved: (URL) -> Void = { _ in }
 
+    /// Fired when the hosted Markup editor opens or finishes closing. Used so
+    /// Put back's temporary ⌘Z hot key is released while Markup needs ⌘Z.
+    var onEditingChange: (Bool) -> Void = { _ in }
+
+    /// True from `edit` until the editor (local window or RemoteWindow) closes.
+    private(set) var isOpen = false {
+        didSet {
+            guard isOpen != oldValue else { return }
+            // Only the remote-extension path must swallow ⌘Z: sending that
+            // key into NSRemoteView crashes the host. The local editor needs
+            // ⌘Z to reach its own undo stack.
+            setUndoMonitor(enabled: isOpen && usesRemoteEditor)
+            onEditingChange(isOpen)
+        }
+    }
+
+    /// Forwards ⌘Z / ⌘⇧Z… actually swallows them while the remote Markup
+    /// extension is open, so they never cross ViewBridge.
+    private var undoMonitor: Any?
+
+    /// True when the editor is the sharing-service RemoteWindow, not the
+    /// in-process MarkupViewController window.
+    private var usesRemoteEditor = false
+
+    private var localSession: LocalMarkupSession?
     private var editing: URL?
     private static let serviceName = NSSharingService.Name("com.apple.MarkupUI.Markup")
 
     func edit(_ url: URL) {
+        if openLocalEditor(url) { return }
+        log.notice("In-process MarkupUI was unavailable; falling back to the sharing service")
         guard let service = NSSharingService(named: Markup.serviceName),
               service.canPerform(withItems: [url]) else {
             // Without the extension, Preview is the closest thing.
             NSWorkspace.shared.open(url)
             return
         }
+        usesRemoteEditor = true
         editing = url
         service.delegate = self
         placeAnchor()
         NSApp.activate(ignoringOtherApps: true)
         service.perform(withItems: [url])
+    }
+
+    /// Opens Apple's Markup editor inside a Tendedero window so ⌘Z can undo
+    /// strokes without crossing into the Markup appex. Returns false if the
+    /// private framework cannot be loaded; the caller then uses the old path.
+    @discardableResult
+    private func openLocalEditor(_ url: URL) -> Bool {
+        localSession?.closeWithoutSaving()
+        localSession = nil
+        usesRemoteEditor = false
+        guard let session = LocalMarkupSession.open(
+            url: url,
+            onSave: { [weak self] data in self?.finishLocalEditor(data: data) },
+            onCancel: { [weak self] in self?.finishLocalEditor(data: nil) }
+        ) else { return false }
+        localSession = session
+        editing = url
+        isOpen = true
+        NSApp.activate(ignoringOtherApps: true)
+        log.notice("Opened in-process Markup editor")
+        return true
+    }
+
+    private func finishLocalEditor(data: Data?) {
+        let target = editing
+        editing = nil
+        localSession = nil
+        isOpen = false
+        guard let data, let target else { return }
+        write(data: Markup.encoded(data, like: target), to: target)
     }
 
     // MARK: NSSharingServiceDelegate
@@ -38,7 +96,11 @@ final class Markup: NSObject, NSSharingServiceDelegate {
 
     nonisolated func sharingService(_ sharingService: NSSharingService,
                                     didFailToShareItems items: [Any], error: Error) {
-        log.notice("Markup ended without saving: \(error.localizedDescription, privacy: .public)")
+        MainActor.assumeIsolated {
+            self.editing = nil
+            self.isOpen = false
+            log.notice("Markup ended without saving: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Markup opens its editor over the window it was shared from, and
@@ -46,8 +108,11 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     /// Tendedero has no window to share from, and without one the editor
     /// lands in a corner of whichever screen macOS picks. An invisible window
     /// in the middle of the screen under the pointer gives it a place.
+    ///
+    /// Borderless windows already refuse key status; the subclass keeps that
+    /// explicit so the invisible host never steals ⌘Z from Markup's editor.
     private lazy var anchor: NSWindow = {
-        let window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        let window = AnchorWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.ignoresMouseEvents = true
@@ -74,6 +139,7 @@ final class Markup: NSObject, NSSharingServiceDelegate {
     private func tidyEditor() {
         tidying?.invalidate()
         centred = false
+        isOpen = true
         let start = Date()
         var shown = false
         var gone: Date?
@@ -91,18 +157,21 @@ final class Markup: NSObject, NSSharingServiceDelegate {
                     if Date().timeIntervalSince(since) > 0.5 {
                         timer.invalidate()
                         self.tidying = nil
+                        self.isOpen = false
                     }
                     return
                 }
-                shown = true
                 gone = nil
                 // Markup keeps the editor to the left of the space it was
-                // given. Once, as it shows up, it moves to the middle.
+                // given. Once, as it shows up, it moves to the middle and
+                // becomes key so drawing undo (⌘Z) reaches the RemoteWindow.
                 if !self.centred, let area = editor.screen?.visibleFrame {
                     self.centred = true
                     editor.setFrameOrigin(NSPoint(x: (area.midX - editor.frame.width / 2).rounded(),
                                                   y: (area.midY - editor.frame.height / 2).rounded()))
                 }
+                shown = true
+                self.keepEditorKey(editor)
                 // Skip backdrop clamping while the pointer is down so a drag
                 // of the editor (or a drawing stroke) is not snapped back.
                 let pointerDown = NSEvent.pressedMouseButtons != 0
@@ -118,6 +187,52 @@ final class Markup: NSObject, NSSharingServiceDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         tidying = timer
+    }
+
+    /// Invisible share-source window that must never become key.
+    private final class AnchorWindow: NSWindow {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
+
+    /// Keep Markup's RemoteWindow key unless a Markup-related panel already
+    /// is, so ⌘Z is delivered there rather than swallowed by the host.
+    private func keepEditorKey(_ editor: NSWindow) {
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        let key = NSApp.keyWindow
+        let className = key?.className ?? ""
+        if key === editor
+            || className.contains("RemoteWindow")
+            || className.contains("BlurWindow")
+            || className.contains("Markup") {
+            return
+        }
+        editor.makeKeyAndOrderFront(nil)
+    }
+
+    private func setUndoMonitor(enabled: Bool) {
+        if let undoMonitor {
+            NSEvent.removeMonitor(undoMonitor)
+            self.undoMonitor = nil
+        }
+        guard enabled else { return }
+        undoMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.forwardMarkupUndo(event)
+        }
+    }
+
+    /// ⌘Z delivered into Markup's NSRemoteView crashes the host: ViewBridge
+    /// traps in sendEventToHost (EXC_BREAKPOINT / SIGTRAP). Swallow the key
+    /// here so it never crosses into the Markup extension. Stroke undo has
+    /// to be triggered some other way than a key event into the remote view.
+    private func forwardMarkupUndo(_ event: NSEvent) -> NSEvent? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let commandOnly = flags.contains(.command) && !flags.contains(.option) && !flags.contains(.control)
+        guard commandOnly, event.charactersIgnoringModifiers?.lowercased() == "z" else { return event }
+        guard NSApp.windows.contains(where: { $0.isVisible && $0.className.contains("RemoteWindow") }) else {
+            return event
+        }
+        return nil
     }
 
     private func placeAnchor() {
